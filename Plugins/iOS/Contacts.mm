@@ -8,6 +8,8 @@
 
 #import "Contacts.h"
 #import <AddressBook/AddressBook.h>
+#import <Contacts/Contacts.h>
+//#import <AddressBook/AddressBook.h>
 #include<pthread.h>
 
 @implementation Contacts
@@ -20,24 +22,24 @@
 // Helper method to create C string copy
 char* aliessmael_MakeStringCopy (const char* string)
 {
-	if (string == NULL)
-		return NULL;
-	
-	char* res = (char*)malloc(strlen(string) + 1);
-	strcpy(res, string);
-	return res;
+    if (string == NULL)
+        return NULL;
+    
+    char* res = (char*)malloc(strlen(string) + 1);
+    strcpy(res, string);
+    return res;
 }
 
 @interface ContactItem :NSObject
 {
-    @public ABRecordRef person;
+@public ABRecordRef person;
     
-    @public NSString *name ;
-    @public ABMultiValueRef phoneNumbersRef;
-    @public NSMutableArray *phoneNumber;
-    @public NSMutableArray *phoneNumberType;
-    @public NSMutableArray *emails;
-    @public NSData* image;
+@public NSString *name ;
+@public ABMultiValueRef phoneNumbersRef;
+@public NSMutableArray *phoneNumber;
+@public NSMutableArray *phoneNumberType;
+@public NSMutableArray *emails;
+@public NSData* image;
 };
 @end
 @implementation ContactItem
@@ -49,6 +51,16 @@ extern "C" {
     CFArrayRef allPeople;
     NSMutableArray* contactItems;
     ABAddressBookRef addressBook;
+    CNContactStore *MiContactAddresBook ;
+    
+    
+    NSArray *DatosParaSacar = @[CNContactEmailAddressesKey,
+                                CNContactFamilyNameKey,
+                                CNContactGivenNameKey,
+                                CNContactPhoneNumbersKey,
+                                CNContactPostalAddressesKey];
+    
+    NSMutableArray *grupoTodosLosContactos;
     
     
     void contact_log( const char* message)
@@ -154,6 +166,7 @@ extern "C" {
         contact_writeString( oStream, c->name );
         
         short size = 0;
+        short size2 = 0;
         if( c->image == NULL)
         {
             [oStream write:(uint8_t *)&size maxLength:2];
@@ -174,13 +187,16 @@ extern "C" {
         else
         {
             size = c->phoneNumber.count;
+            size2 = c->phoneNumberType.count;
             [oStream write:(uint8_t *)&size maxLength:2];
             for (int i = 0; i < size; i++)
             {
                 NSString* text1 = [c->phoneNumber objectAtIndex:i];
                 contact_writeString( oStream, text1 );
-                NSString* text2 = [c->phoneNumberType objectAtIndex:i];
-                contact_writeString( oStream, text2 );
+                if( i < size2){
+                    NSString* text2 = [c->phoneNumberType objectAtIndex:i];
+                    contact_writeString( oStream, text2 );
+                }
             }
         }
         
@@ -221,50 +237,120 @@ extern "C" {
         return aliessmael_MakeStringCopy(data) ;
     }
     
+    void* parseContactWithContact (CNContact* contact, ContactItem* ci)
+    {
+        NSString* firstName =  contact.givenName;
+        NSString* lastName =  contact.familyName;
+        // NSString* phone = [[contact.phoneNumbers valueForKey:@"value"] valueForKey:@"digits"];
+        CNLabeledValue *emailValue = contact.emailAddresses.firstObject;
+        //NSString *emailString = email.value;
+        NSString* email = emailValue.value;
+        
+        NSArray <CNLabeledValue<CNPhoneNumber *> *> *phoneNumbers = contact.phoneNumbers;
+        CNLabeledValue<CNPhoneNumber *> *firstPhone = [phoneNumbers firstObject];
+        CNPhoneNumber *number = firstPhone.value;
+        NSString *digits = number.stringValue; // 1234567890
+        NSString *label = firstPhone.label; // Mobile
+        
+        //NSArray * addrArr = [self parseAddressWithContac:contact];
+        ci->name = [NSString stringWithFormat:@"%@ %@",firstName,lastName];
+        ci->phoneNumber = [NSMutableArray new];
+        
+        ci->phoneNumberType = [NSMutableArray new];
+        ci->emails = [NSMutableArray new];
+        
+        
+        if (digits.length > 0)
+        {
+            [ci->phoneNumber addObject:digits];
+        }
+        if (label.length > 0)
+        {
+            [ci->phoneNumberType addObject:label];
+        }
+        if (email.length > 0)
+        {
+            [ci->emails addObject:email];
+        }
+        // [ci->emails addObject:@"5555 666 777@ccc.com"];
+        
+        ci->image = nil;
+        
+        //NSLog( @" ------------ nombre: %@ correo; --%@ %d|%@ %d--" , ci->name,digits,digits.length,label,label.length);
+        
+        //return 0;
+    }
     
     void* contact_load_thread( void *arg)
     {
         //ABRecordRef source = ABAddressBookCopyDefaultSource(addressBook);
-        allPeople = ABAddressBookCopyArrayOfAllPeopleInSourceWithSortOrdering(addressBook, nil, kABPersonSortByFirstName);
-        nPeople = ABAddressBookGetPersonCount( addressBook );
+        /*allPeople = ABAddressBookCopyArrayOfAllPeopleInSourceWithSortOrdering(addressBook, nil, kABPersonSortByFirstName);
+         nPeople = ABAddressBookGetPersonCount( addressBook );*/
         // NSLog( @"error %@" , *error );
         // NSLog( @"cont %ld" , nPeople );
+        MiContactAddresBook = [[CNContactStore alloc]init];
+        
+        CNContactFetchRequest *fechRequest = [[CNContactFetchRequest alloc] initWithKeysToFetch:DatosParaSacar];
+        
+        __block int i =0;
         contactItems = [NSMutableArray new];
-        for ( int i = 0; i < nPeople; i++ )
-        {
-            ContactItem* c = [[ContactItem alloc]init];
-            c->person = CFArrayGetValueAtIndex( allPeople, i );
-            if( c->person == nil)
-            {
-                NSLog( @"contact %d is empty" , i );
-                continue;
-            }
-            
-            contact_loadName( c );
-            
-            contact_loadPhoneNumbers( c);
-            
-            contact_loadEmails( c );
-            
-            contact_loadPhoto( c );
-            
-            
-            [contactItems addObject:c];
-            
-            NSString *idStr = [NSString stringWithFormat:@"%d",i];
-            const char* _idStr = [idStr UTF8String] ;
-            //contact_log( _idStr);
-            
-            UnitySendMessage("ContactsListMessageReceiver", "OnContactReady", _idStr);
-            
-        }
+        
+        [MiContactAddresBook enumerateContactsWithFetchRequest:fechRequest error:nil
+                                                    usingBlock:^(CNContact * _Nonnull contact, BOOL * _Nonnull stop) {
+                                                        //[];
+                                                        
+                                                        ContactItem* ci = [[ContactItem alloc]init];
+                                                        //NSLog( @"contact %d is empty" , contact );
+                                                        parseContactWithContact(contact,ci);
+                                                        
+                                                        [contactItems addObject:ci];
+                                                        
+                                                        NSString *idStr = [NSString stringWithFormat:@"%d",i];
+                                                        const char* _idStr = [idStr UTF8String] ;
+                                                        //contact_log( _idStr);
+                                                        NSLog( @" -------- ++++ i: %@" , idStr );
+                                                        NSLog( @" ------------ nombre: %@ " , ci->name );
+                                                        UnitySendMessage("ContactsListMessageReceiver", "OnContactReady", _idStr);
+                                                        
+                                                        i= i+1;
+                                                        
+                                                    } ];
+        /*for ( int i = 0; i < nPeople; i++ )
+         {
+         ContactItem* c = [[ContactItem alloc]init];
+         c->person = CFArrayGetValueAtIndex( allPeople, i );
+         if( c->person == nil)
+         {
+         NSLog( @"contact %d is empty" , i );
+         continue;
+         }
+         
+         contact_loadName( c );
+         
+         contact_loadPhoneNumbers( c);
+         
+         contact_loadEmails( c );
+         
+         contact_loadPhoto( c );
+         
+         
+         [contactItems addObject:c];
+         
+         NSString *idStr = [NSString stringWithFormat:@"%d",i];
+         const char* _idStr = [idStr UTF8String] ;
+         //contact_log( _idStr);
+         
+         UnitySendMessage("ContactsListMessageReceiver", "OnContactReady", _idStr);
+         
+         }*/
         UnitySendMessage("ContactsListMessageReceiver", "OnInitializeDone","");
         
         
         
-        CFRelease(addressBook);
-        CFRelease(allPeople);
-        addressBook = NULL;
+        /*CFRelease(addressBook);
+         CFRelease(allPeople);
+         addressBook = NULL;*/
+        //return 0:
     }
     
     pthread_t thread = NULL;
@@ -292,9 +378,9 @@ extern "C" {
         addressBook = ABAddressBookCreateWithOptions(NULL, error );
         if (error) {
             NSLog(@"error: %@", CFBridgingRelease(error));
-            if (addressBook) 
-				CFRelease(addressBook);
-			UnitySendMessage("ContactsListMessageReceiver", "OnInitializeFail","Can not create addressbook");
+            if (addressBook)
+                CFRelease(addressBook);
+            UnitySendMessage("ContactsListMessageReceiver", "OnInitializeFail","Can not create addressbook");
             return;
         }
         if (status == kABAuthorizationStatusNotDetermined)
@@ -317,7 +403,7 @@ extern "C" {
                         
                         [[[UIAlertView alloc] initWithTitle:nil message:@"This app requires access to your contacts to function properly. Please visit to the \"Privacy\" section in the iPhone Settings app." delegate:nil cancelButtonTitle:@"OK" otherButtonTitles:nil] show];
                     });
-					UnitySendMessage("ContactsListMessageReceiver", "OnInitializeFail","kABAuthorizationStatusNotDetermined");
+                    UnitySendMessage("ContactsListMessageReceiver", "OnInitializeFail","kABAuthorizationStatusNotDetermined");
                 }
                 
                 //CFRelease(addressBook);
@@ -335,6 +421,7 @@ extern "C" {
     }
     
 }
+
 
 
 
